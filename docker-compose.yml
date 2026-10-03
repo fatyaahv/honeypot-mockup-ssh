@@ -1,0 +1,22 @@
+﻿services:
+  backend:
+    image: python:3.12-slim
+    working_dir: /workspace
+    command: ["python", "-c", "import time; time.sleep(10**9)"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./backend:/workspace/backend
+      - ./data:/workspace/data
+
+  cowrie:
+    image: cowrie/cowrie:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:2222:2222"
+    volumes:
+      - ./honeypot/var:/cowrie/cowrie-git/var
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

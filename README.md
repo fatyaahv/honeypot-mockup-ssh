@@ -116,3 +116,40 @@ The risk score is clamped to 0–100 and sums these points:
 - Activity in the same session: +2 per event after the first, capped at 10
 
 Score levels are Low 0–24, Medium 25–49, High 50–74, and Critical 75–100. The result is an internal, explainable prioritization score, not a probability of compromise. `risk_factors` stores the point breakdown. Stable alert IDs make repeated runs idempotent; existing rows are refreshed if the score or context changes.
+
+## Phase 7: session-level AI behavioral analysis
+
+AI analysis is an optional interpretation layer. `analyzer.behavior_analyzer.analyze_database_sessions()` first runs the existing deterministic detection, ATT&CK mapping, and risk scoring, then makes a compact context for each SSH session and sends it through an `AIProvider`. AI output is returned separately; it never changes or replaces deterministic alerts or risk scores. No shell commands or other actions are exposed to the model or executed.
+
+Configure the provider in `.env` (copy `.env.example` first): `AI_PROVIDER=openai`, `OPENAI_API_KEY`, `OPENAI_MODEL`, optional `OPENAI_BASE_URL`, and `AI_REQUEST_TIMEOUT_SECONDS`. The API key is read from the environment and is not stored in source. This workspace's Python calls do not automatically load `.env`; set these variables in the process environment or load them with your deployment configuration before invoking the analyzer. Tests use a fake provider and make no API calls.
+
+Example:
+
+```python
+from analyzer.behavior_analyzer import analyze_database_sessions
+
+results = analyze_database_sessions()  # uses the configured OpenAI provider
+for result in results:
+    print(result["status"], result["session_id"], result["analysis"])
+```
+
+The provider receives event IDs and ordered event types, timestamps, redacted commands, authentication outcomes, username, source IP, prior alert types/severities, ATT&CK associations, and the existing deterministic session risk score. It does not receive Cowrie raw log records, alert descriptions, or passwords. Context is capped at the most recent 250 events, with timestamps covering the full session and an `events_truncated` flag. Common inline command secret forms are redacted, but this is not a general-purpose secret detector; review integrations before sending sensitive data to an external provider.
+
+The response schema separates `observed_facts` (cited event IDs) from `observed_patterns` (interpretations), and requires an attack stage, likely objective, confidence, uncertainty, and analyst summary. The application validates every response and evidence reference. Invalid model output is discarded and marked `invalid_response`; provider/configuration errors are marked `unavailable`. Neither failure affects stored events or deterministic alerts. Confidence is an expression of model uncertainty, not a calibrated probability of compromise.
+
+## Phase 8: constrained adaptive deception
+
+`analyzer.deception_profiles` contains four immutable fictional profiles: `generic_linux`, `web_server`, `database_server`, and `developer_workstation`. Each includes a fake hostname, user names, paths, artifact text, and simulated system details. The apparent `/etc/passwd` files contain only invented account metadata with `x` placeholders; there are no password hashes or real host files. The selector prefers specific command/detection evidence, then accepts only an AI recommendation from the fixed profile list. Unknown AI recommendations are rejected and fall back to `generic_linux`.
+
+Run `analyzer.behavior_analyzer.adapt_database_sessions()` to run deterministic analysis and AI analysis, choose a profile, and save the analysis and profile manifest in the `session_deception_profiles` SQLite table. `get_profile_selections()` reads these saved choices. The adapter returns a profile manifest made only from the predefined values. It never executes commands, opens host files, or changes container security settings.
+
+Cowrie emulates its own virtual filesystem. Its supported static customization uses `honeyfs` content overrides and command-output text files; new visible paths also need matching virtual filesystem metadata. See [Cowrie's filesystem documentation](https://docs.cowrie.org/en/latest/HONEYFS.html) and [customization guide](https://docs.cowrie.org/en/stable/INSTALL.html#customizing-the-honeypot). The current Compose service only mounts Cowrie's `var/` data, so Phase 8 stores a per-session profile choice but does not switch the running Cowrie filesystem. A later, controlled Cowrie adapter can translate only the selected manifest into a version-pinned, read-only `contents_path`/`txtcmds_path` overlay and matching filesystem metadata. Applying separate environments to active sessions would require Cowrie-side session integration; this phase deliberately does not modify the container or attempt live switching.
+
+Example:
+
+```python
+from analyzer.behavior_analyzer import adapt_database_sessions
+
+for result in adapt_database_sessions():
+    print(result["session_id"], result["deception"]["profile_name"])
+```

@@ -153,3 +153,48 @@ from analyzer.behavior_analyzer import adapt_database_sessions
 for result in adapt_database_sessions():
     print(result["session_id"], result["deception"]["profile_name"])
 ```
+
+## Phase 9: local SOC dashboard and API
+
+The read-only FastAPI service reads normalized events from `security_events`, enriched alerts from `security_alerts`, and stored AI/profile results from `session_deception_profiles`. It presents those stored results and does not rerun detections, MITRE mapping, risk scoring, or AI analysis for dashboard requests. The plain HTML/CSS/JavaScript frontend is served by the same API process; no frontend framework or separate dashboard server is required.
+
+Install the local API dependencies from the project root:
+
+```powershell
+.\.tools\python313\python.exe -m pip install -r requirements.txt
+```
+
+Start the API and dashboard together, bound to loopback:
+
+```powershell
+$env:HONEYPOT_DATABASE_PATH = "data/security_events.sqlite3"
+.\.tools\python313\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000` for the dashboard or `http://127.0.0.1:8000/docs` for interactive API documentation. Stop the server with `Ctrl+C`. The dashboard is read-only; it has no route to Cowrie's SSH port, host files, shell commands, or honeypot configuration.
+
+### API endpoints
+
+| Method and path | Purpose |
+|---|---|
+| `GET /health` | API health check |
+| `GET /api/stats/overview` | Overview counters and average alert risk |
+| `GET /api/events` | Paginated events; optional `source_ip`, `session_id`, and `event_type` filters |
+| `GET /api/alerts` | Paginated alerts; optional severity, risk level, source, type, and session filters |
+| `GET /api/sessions` | Paginated session summaries; optional source IP filter |
+| `GET /api/sessions/{session_id}` | Session timeline, authentication, commands, alerts, techniques, AI summary, and profile |
+| `GET /api/sessions/{session_id}/ai` | Stored AI analysis for a session |
+| `GET /api/sessions/{session_id}/deception` | Selected fictional deception profile |
+| `GET /api/sources` | Per-source event, session, alert, and risk summary |
+| `GET /api/mitre/techniques` | Technique and tactic occurrence counts |
+| `GET /api/risk-distribution` | Alert counts by risk level |
+| `GET /api/ai-analyses` | Persisted AI analysis results and selected profile names |
+
+List endpoints accept `limit` from 1 to 500 and nonnegative `offset`; invalid enum values and out-of-range paging values return HTTP 422. Missing session resources return HTTP 404.
+
+### Investigation workflow
+
+1. Ingest a Cowrie JSONL file with `collect_cowrie_log()` and run the existing deterministic enrichment pipeline.
+2. Run `adapt_database_sessions()` to persist AI analysis/profile data if desired. The API remains useful if no AI result is present.
+3. Open the dashboard, filter alerts by severity/risk/source/type, then select an alert or session row.
+4. Review the session’s authentication and command sequence, linked alerts, MITRE associations, risk score, AI summary/confidence, and selected profile in the investigation panel.
